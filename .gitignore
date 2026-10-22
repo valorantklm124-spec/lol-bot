@@ -1,0 +1,8 @@
+.env
+state.json
+lolbot.db
+__pycache__/
+*.pyc
+venv/
+.venv/
+*.egg-info
