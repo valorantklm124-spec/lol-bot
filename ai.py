@@ -44,7 +44,7 @@ def extract_text(resp) -> str:
     return " ".join(parts).strip()
 
 
-async def comment(prompt: str, max_tokens: int = 900, retries: int = 2) -> str:
+async def comment(prompt: str, max_tokens: int = 500, retries: int = 2) -> str:
     """Appel Anthropic avec retry. Retourne le texte ou un fallback."""
     c = client()
     for attempt in range(retries):

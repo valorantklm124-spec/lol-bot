@@ -252,20 +252,26 @@ class LolCog(commands.Cog):
         if stats["queue"] in ARENA_QUEUES:
             arena_info = f"- Placement Arena : #{stats.get('placement') or stats.get('subteam_placement') or '?'}"
 
-        comment = await ai.comment(prompts.ANALYSE.format(
-            name=t.game_name, tag=t.tag, rank=t.rank_str, lp_change=lp_txt or "—",
-            champ=stats["champ"], role=stats["role"], mode=stats["mode"],
-            win="Victoire" if stats["win"] else "Défaite",
-            dur=format_duration(stats["dur"]),
-            k=stats["kills"], d=stats["deaths"], a=stats["assists"],
-            kda=stats["kda"], kp=stats["kp"], team_kills=stats["team_kills"],
-            dmg=f"{stats['dmg']:,}", dpm=stats["dpm"],
-            dmg_taken=f"{stats['dmg_taken']:,}", mitigated=f"{stats['mitigated']:,}",
-            cs=stats["cs"], cs_min=stats["cs_min"], vision=stats["vision"],
-            wards=stats["wards"], gold=f"{stats['gold']:,}",
-            multis=multis, solo=stats["solo_kills"], turret=stats["turret"],
-            items=", ".join(stats["items"]) or "—",
-            arena_info=arena_info))
+        # Commentaire IA + graphe dégâts en parallèle
+        comment, chart = await asyncio.gather(
+            ai.comment(prompts.ANALYSE.format(
+                name=t.game_name, tag=t.tag, rank=t.rank_str, lp_change=lp_txt or "—",
+                champ=stats["champ"], role=stats["role"], mode=stats["mode"],
+                win="Victoire" if stats["win"] else "Défaite",
+                dur=format_duration(stats["dur"]),
+                k=stats["kills"], d=stats["deaths"], a=stats["assists"],
+                kda=stats["kda"], kp=stats["kp"], team_kills=stats["team_kills"],
+                dmg=f"{stats['dmg']:,}", dpm=stats["dpm"],
+                dmg_taken=f"{stats['dmg_taken']:,}", mitigated=f"{stats['mitigated']:,}",
+                cs=stats["cs"], cs_min=stats["cs_min"], vision=stats["vision"],
+                wards=stats["wards"], gold=f"{stats['gold']:,}",
+                multis=multis, solo=stats["solo_kills"], turret=stats["turret"],
+                items=", ".join(stats["items"]) or "—",
+                arena_info=arena_info)),
+            asyncio.to_thread(images.damage_chart,
+                              match["info"]["participants"], t.puuid,
+                              champ_of=self.dd.champ_name),
+        )
 
         win = stats["win"]
         color = 0x2ECC71 if win else 0xE74C3C
@@ -287,10 +293,6 @@ class LolCog(commands.Cog):
         foot = f"{t.display} • {t.rank_str}{streak_txt}"
         e.set_footer(text=foot)
 
-        # graphe de dégâts
-        chart = images.damage_chart(match["info"]["participants"], t.puuid,
-                                    champ_of=self.dd.champ_name)
-
         # contexte pour le bouton Ask
         ctx = (
             f"Joueur: {t.display} | Rang: {t.rank_str} | Champ: {stats['champ']} "
@@ -303,10 +305,12 @@ class LolCog(commands.Cog):
         )
 
         chan = await self._channel()
-        file = discord.File(chart, filename="dmg.png") if chart else None
         if chart:
+            file = discord.File(chart, filename="dmg.png")
             e.set_image(url="attachment://dmg.png")
-        await chan.send(embed=e, file=file, view=views.AskView(ctx))
+            await chan.send(embed=e, file=file, view=views.AskView(ctx))
+        else:
+            await chan.send(embed=e, view=views.AskView(ctx))
         log.info(f"{t.display} : game postée ({stats['champ']} {'W' if win else 'L'})")
 
     # ── boucle principale ──────────────────────────────────────
@@ -328,8 +332,12 @@ class LolCog(commands.Cog):
 
 # ─────────────────────────── Commands ───────────────────────────
 
-def autocomp_trackers(cog: LolCog):
+def autocomp_trackers():
+    """Autocomplete : lit les trackers au moment de l'appel (pas au boot)."""
     async def _ac(interaction: discord.Interaction, current: str):
+        cog = getattr(interaction.client, "cog", None)
+        if not cog or not cog.trackers:
+            return []
         return [
             app_commands.Choice(name=t.display, value=t.puuid)
             for t in cog.trackers.values()
@@ -400,7 +408,7 @@ async def track(interaction: discord.Interaction, game_name: str, tag: str):
 
 
 @bot.tree.command(name="untrack", description="Arrêter de suivre un joueur.")
-@app_commands.autocomplete(joueur=autocomp_trackers(bot.cog))
+@app_commands.autocomplete(joueur=autocomp_trackers())
 async def untrack(interaction: discord.Interaction, joueur: str):
     t = bot.cog.trackers.get(joueur)
     if not t:
@@ -440,7 +448,7 @@ async def ingame(interaction: discord.Interaction):
 
 # ── /stats ─────────────────────────────────────────────────────
 @bot.tree.command(name="stats", description="Fiche joueur : rang, masteries, forme récente.")
-@app_commands.autocomplete(joueur=autocomp_trackers(bot.cog))
+@app_commands.autocomplete(joueur=autocomp_trackers())
 async def stats(interaction: discord.Interaction, joueur: Optional[str] = None):
     await interaction.response.defer(thinking=True)
     t = tracker_or_none(interaction, joueur)
@@ -505,7 +513,7 @@ async def stats(interaction: discord.Interaction, joueur: Optional[str] = None):
 
 # ── /last ──────────────────────────────────────────────────────
 @bot.tree.command(name="last", description="Analyse de la dernière game d'un joueur.")
-@app_commands.autocomplete(joueur=autocomp_trackers(bot.cog))
+@app_commands.autocomplete(joueur=autocomp_trackers())
 async def last(interaction: discord.Interaction, joueur: Optional[str] = None):
     await interaction.response.defer(thinking=True)
     t = tracker_or_none(interaction, joueur)
@@ -529,7 +537,7 @@ async def last(interaction: discord.Interaction, joueur: Optional[str] = None):
 # ── /recap ─────────────────────────────────────────────────────
 @bot.tree.command(name="recap", description="Récap des N dernières games (avec graphe).")
 @app_commands.describe(n="Nombre de games (défaut 10)")
-@app_commands.autocomplete(joueur=autocomp_trackers(bot.cog))
+@app_commands.autocomplete(joueur=autocomp_trackers())
 async def recap(interaction: discord.Interaction, joueur: Optional[str] = None, n: int = 10):
     await interaction.response.defer(thinking=True)
     t = tracker_or_none(interaction, joueur)
@@ -571,10 +579,12 @@ async def recap(interaction: discord.Interaction, joueur: Optional[str] = None, 
     e.add_field(name="Games", value=f"```\n{lines}\n```", inline=False)
 
     chart = images.session_chart(games)
-    file = discord.File(chart, filename="session.png") if chart else None
     if chart:
+        file = discord.File(chart, filename="session.png")
         e.set_image(url="attachment://session.png")
-    await interaction.followup.send(embed=e, file=file)
+        await interaction.followup.send(embed=e, file=file)
+    else:
+        await interaction.followup.send(embed=e)
 
 
 # ── /ask ───────────────────────────────────────────────────────
@@ -583,7 +593,7 @@ async def recap(interaction: discord.Interaction, joueur: Optional[str] = None, 
 async def ask(interaction: discord.Interaction, question: str):
     await interaction.response.defer(thinking=True)
     answer = await ai.comment(f"{prompts.ASK_SYSTEM}\n\nQuestion : {question}",
-                              max_tokens=1000)
+                              max_tokens=600)
     e = discord.Embed(title="Analyse IA", description=answer[:3900], color=0x8B5CF6)
     e.set_footer(text=f"Q : {question[:200]}")
     await interaction.followup.send(embed=e)

@@ -30,7 +30,7 @@ class AskModal(discord.ui.Modal, title="Poser une question sur cette game"):
         prompt = ASK.format(context=self.context, question=self.question.value)
         # on passe le contexte système en premier message "system-like"
         full = f"{ASK_SYSTEM}\n\n{prompt}"
-        answer = await ai.comment(full, max_tokens=1200)
+        answer = await ai.comment(full, max_tokens=600)
         if len(answer) > MAX_ANSWER:
             answer = answer[:MAX_ANSWER] + "…"
         e = discord.Embed(title="Analyse IA", description=answer, color=0x8B5CF6)
